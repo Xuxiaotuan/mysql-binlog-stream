@@ -8,8 +8,8 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 
 import java.{io, util}
+import scala.collection.concurrent.TrieMap
 import scala.collection.immutable.Queue
-import scala.collection.mutable
 
 class TransactionStateTest extends AnyWordSpec with Matchers with OptionValues {
 
@@ -108,7 +108,7 @@ class TransactionStateTest extends AnyWordSpec with Matchers with OptionValues {
         )
       val schemaMeta =
         models
-          .SchemaMetadata(tables = Map("sku" -> skuMeta), idToTable = mutable.Map(123L -> skuMeta))
+          .SchemaMetadata(tables =  TrieMap("sku" -> skuMeta) , idToTable = TrieMap(123L -> "sku"))
       val res = for {
         _      <- TransactionState.nextState(createRotateEvent)
         _      <- TransactionState.nextState(createBeginEvent)
@@ -150,7 +150,7 @@ class TransactionStateTest extends AnyWordSpec with Matchers with OptionValues {
         )
       val schemaMeta =
         models
-          .SchemaMetadata(tables = Map("sku" -> skuMeta), idToTable = mutable.Map(123L -> skuMeta))
+          .SchemaMetadata(tables = TrieMap("sku" -> skuMeta) , idToTable = TrieMap(123L -> "sku"))
 
       val json = TransactionState.convertToJson(
         tableMeta = schemaMeta.tables("sku"),

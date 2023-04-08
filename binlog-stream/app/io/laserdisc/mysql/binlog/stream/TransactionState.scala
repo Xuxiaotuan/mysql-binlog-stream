@@ -25,7 +25,7 @@ case class TransactionState(
                              fileName: String,
                              offset: Long,
                              schemaMetadata: SchemaMetadata,
-                             binLogConfig: BinLogConfig
+                             binLogConfig: BinLogConfig = null
                            ) {
   def assemblePackage: TransactionPackage =
     TransactionPackage(

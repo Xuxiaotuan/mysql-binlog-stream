@@ -63,7 +63,7 @@ class PipesTest extends AnyWordSpec with Matchers with ForAllTestContainer with 
             implicit0(logger: Logger[IO]) <- Slf4jLogger.fromName[IO]("testing")
             schemaMetadata                <- SchemaMetadata.buildSchemaMetadata("test")
             transactionState <- TransactionState
-              .createTransactionState[IO](schemaMetadata, client)
+              .createTransactionState[IO](schemaMetadata, client, fixture.cfg)
             actions <- MysqlBinlogStream
               .rawEvents[IO](client)
               .through(streamEvents(transactionState))
