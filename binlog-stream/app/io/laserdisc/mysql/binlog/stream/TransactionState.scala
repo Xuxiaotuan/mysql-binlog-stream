@@ -1,30 +1,32 @@
 package io.laserdisc.mysql.binlog.stream
 
 import cats.data.State
-import cats.effect.Sync
+import cats.effect.unsafe.implicits.global
+import cats.effect.{IO, Ref, Sync}
 import cats.implicits._
 import com.github.shyiko.mysql.binlog.BinaryLogClient
 import com.github.shyiko.mysql.binlog.event.EventType.{EXT_UPDATE_ROWS, UPDATE_ROWS}
-import com.github.shyiko.mysql.binlog.event.{Event, EventData, EventHeaderV4 => JEventHeaderV4, EventType}
+import com.github.shyiko.mysql.binlog.event.{Event, EventData, EventType, EventHeaderV4 => JEventHeaderV4}
 import org.typelevel.log4cats.Logger
 import io.circe.Json
+import io.laserdisc.mysql.binlog.config.BinLogConfig
 import io.laserdisc.mysql.binlog.event.EventMessage
 import io.laserdisc.mysql.binlog.models._
 
 import java.io.Serializable
 import java.math.BigDecimal
 import scala.collection.immutable.Queue
-import cats.effect.Ref
 
 case class TransactionState(
-    transactionEvents: Queue[EventMessage],
-    start: Long = 0,
-    end: Long = 0,
-    timestamp: Long,
-    fileName: String,
-    offset: Long,
-    schemaMetadata: SchemaMetadata
-) {
+                             transactionEvents: Queue[EventMessage],
+                             start: Long = 0,
+                             end: Long = 0,
+                             timestamp: Long,
+                             fileName: String,
+                             offset: Long,
+                             schemaMetadata: SchemaMetadata,
+                             binLogConfig: BinLogConfig
+                           ) {
   def assemblePackage: TransactionPackage =
     TransactionPackage(
       events = transactionEvents.toList,
@@ -38,16 +40,31 @@ case class TransactionState(
 }
 
 case class TransactionPackage(
-    events: List[EventMessage],
-    offset: Long,
-    transactionDuration: Long
-)
+                               events: List[EventMessage],
+                               offset: Long,
+                               transactionDuration: Long
+                             )
 
 object TransactionState {
+
   type Row = Array[Option[Serializable]]
 
+  private def getTableByName(tableName: String)(implicit transactionState: TransactionState): Option[TableMetadata] = {
+    transactionState.schemaMetadata.tables
+      .get(tableName) match {
+      case Some(t) => Some(t)
+      case None =>
+        val schemaMetadataIO: IO[SchemaMetadata] = SchemaUtils.buildSchemaMetadata(transactionState.binLogConfig, tableName)
+        val schemaMetadata: SchemaMetadata = schemaMetadataIO.unsafeRunSync()
+        schemaMetadata.tables.get(tableName).map { table =>
+          transactionState.schemaMetadata.tables.put(tableName, table)
+          table
+        }
+    }
+  }
+
   def nextState(event: Event, schema: String = null): State[TransactionState, Option[TransactionPackage]] =
-    State[TransactionState, Option[TransactionPackage]] { implicit transactionState =>
+    State[TransactionState, Option[TransactionPackage]] { implicit transactionState: TransactionState =>
       (event.getHeader[JEventHeaderV4], event.getData[EventData]) match {
         case (EventHeaderV4(EventType.FORMAT_DESCRIPTION, _, offset), _) =>
           (transactionState.copy(offset = offset), None)
@@ -55,49 +72,48 @@ object TransactionState {
           (transactionState.copy(fileName = fileName, offset = offset), None)
 
         case (
-              EventHeaderV4(EventType.QUERY, timestamp, offset),
-              QueryEventData("begin", _, _, _)
-            ) =>
+          EventHeaderV4(EventType.QUERY, timestamp, offset),
+          QueryEventData("begin", _, _, _)
+          ) =>
           (transactionState.copy(start = timestamp, offset = offset), None)
 
         case (EventHeaderV4(EventType.TABLE_MAP, _, offset), TableMapEventData(tableId, database, name)) =>
           if (schema == null || database == schema) {
-            transactionState.schemaMetadata.tables
-              .get(name)
-              .foreach(transactionState.schemaMetadata.idToTable(tableId) = _)
+            getTableByName(name)
+              .foreach(e => transactionState.schemaMetadata.idToTable.put(tableId, e.name))
           }
           (transactionState.copy(offset = offset), None)
 
         case (
-              EventHeaderV4(EventType.EXT_WRITE_ROWS | EventType.WRITE_ROWS, timestamp, offset),
-              WriteRowsEventData(tableId, rows, includedColumns)
-            ) =>
+          EventHeaderV4(EventType.EXT_WRITE_ROWS | EventType.WRITE_ROWS, timestamp, offset),
+          WriteRowsEventData(tableId, rows, includedColumns)
+          ) =>
           handleCreate(tableId, offset, timestamp, rows, includedColumns)
 
         case (
-              EventHeaderV4(EXT_UPDATE_ROWS | UPDATE_ROWS, timestamp, offset),
-              UpdateRowsEventData(tableId, beforeAfter, includedColumns)
-            ) =>
+          EventHeaderV4(EXT_UPDATE_ROWS | UPDATE_ROWS, timestamp, offset),
+          UpdateRowsEventData(tableId, beforeAfter, includedColumns)
+          ) =>
           handleUpdate(tableId, offset, timestamp, beforeAfter, includedColumns)
 
         case (
-              EventHeaderV4(EventType.EXT_DELETE_ROWS | EventType.DELETE_FILE, timestamp, offset),
-              DeleteRowsEventData(tableId, rows, columns)
-            ) =>
+          EventHeaderV4(EventType.EXT_DELETE_ROWS | EventType.DELETE_FILE, timestamp, offset),
+          DeleteRowsEventData(tableId, rows, columns)
+          ) =>
           handleDelete(tableId, offset, timestamp, rows, columns)
 
         case (EventHeaderV4(EventType.XID, timestamp, offset), XidEventData(xaId)) =>
           handleCommit(transactionState, offset, timestamp, Some(xaId))
         case (
-              EventHeaderV4(EventType.QUERY, timestamp, offset),
-              QueryEventData("commit", _, _, _)
-            ) =>
+          EventHeaderV4(EventType.QUERY, timestamp, offset),
+          QueryEventData("commit", _, _, _)
+          ) =>
           handleCommit(transactionState, offset, timestamp, None)
 
         case (
-              EventHeaderV4(EventType.QUERY, timestamp, offset),
-              QueryEventData(_, _, sqlAction, Some(table))
-            ) =>
+          EventHeaderV4(EventType.QUERY, timestamp, offset),
+          QueryEventData(_, _, sqlAction, Some(table))
+          ) =>
           handleDdl(table, timestamp, offset, sqlAction)
 
         case (EventHeaderV4(EventType.QUERY | EventType.ANONYMOUS_GTID, _, _), _) =>
@@ -109,16 +125,16 @@ object TransactionState {
     }
 
   def handleCreate(
-      tableId: Long,
-      offset: Long,
-      timestamp: Long,
-      rows: List[Array[Serializable]],
-      includedColumns: Array[Int]
-  )(implicit transactionState: TransactionState): (TransactionState, Option[TransactionPackage]) = {
+                    tableId: Long,
+                    offset: Long,
+                    timestamp: Long,
+                    rows: List[Array[Serializable]],
+                    includedColumns: Array[Int]
+                  )(implicit transactionState: TransactionState): (TransactionState, Option[TransactionPackage]) = {
 
     val jsonRows = (for {
       tableName <- toTableName(tableId)
-      tableMeta <- transactionState.schemaMetadata.tables.get(tableName)
+      tableMeta <- getTableByName(tableName)
     } yield rows
       .map(row =>
         convertToJson(
@@ -140,18 +156,18 @@ object TransactionState {
   }
 
   def handleUpdate(
-      tableId: Long,
-      offset: Long,
-      timestamp: Long,
-      beforeAfter: List[(Array[Serializable], Array[Serializable])],
-      includedColumns: Array[Int]
-  )(
-      implicit transactionState: TransactionState
-  ): (TransactionState, Option[TransactionPackage]) = {
+                    tableId: Long,
+                    offset: Long,
+                    timestamp: Long,
+                    beforeAfter: List[(Array[Serializable], Array[Serializable])],
+                    includedColumns: Array[Int]
+                  )(
+                    implicit transactionState: TransactionState
+                  ): (TransactionState, Option[TransactionPackage]) = {
 
     val jsonRows = (for {
       tableName <- toTableName(tableId)
-      tableMeta <- transactionState.schemaMetadata.tables.get(tableName)
+      tableMeta <- getTableByName(tableName)
     } yield beforeAfter
       .map { case (before, after) =>
         convertToJson(
@@ -176,17 +192,17 @@ object TransactionState {
   }
 
   def handleDelete(
-      tableId: Long,
-      offset: Long,
-      timestamp: Long,
-      rows: List[Array[Serializable]],
-      includedColumns: Array[Int]
-  )(
-      implicit transactionState: TransactionState
-  ): (TransactionState, Option[TransactionPackage]) = {
+                    tableId: Long,
+                    offset: Long,
+                    timestamp: Long,
+                    rows: List[Array[Serializable]],
+                    includedColumns: Array[Int]
+                  )(
+                    implicit transactionState: TransactionState
+                  ): (TransactionState, Option[TransactionPackage]) = {
     val jsonRows = (for {
       tableName <- toTableName(tableId)
-      tableMeta <- transactionState.schemaMetadata.tables.get(tableName)
+      tableMeta <- getTableByName(tableName)
     } yield rows
       .map(row =>
         convertToJson(
@@ -210,13 +226,13 @@ object TransactionState {
   }
 
   def handleDdl(
-      table: String,
-      timestamp: Long,
-      offset: Long,
-      sqlAction: String
-  )(
-      implicit transactionState: TransactionState
-  ): (TransactionState, Option[TransactionPackage]) = {
+                 table: String,
+                 timestamp: Long,
+                 offset: Long,
+                 sqlAction: String
+               )(
+                 implicit transactionState: TransactionState
+               ): (TransactionState, Option[TransactionPackage]) = {
     val ddlEvent = Queue(
       EventMessage(
         table,
@@ -244,18 +260,19 @@ object TransactionState {
         offset = offset,
         timestamp = timestamp,
         fileName = transactionState.fileName,
-        transactionEvents = Queue.empty
+        transactionEvents = Queue.empty,
+        binLogConfig = transactionState.binLogConfig
       ),
       Some(pack)
     )
   }
 
   def handleCommit(
-      transactionState: TransactionState,
-      offset: Long,
-      timestamp: Long,
-      xaId: Option[Long]
-  ): (TransactionState, Option[TransactionPackage]) = {
+                    transactionState: TransactionState,
+                    offset: Long,
+                    timestamp: Long,
+                    xaId: Option[Long]
+                  ): (TransactionState, Option[TransactionPackage]) = {
     val marked = (transactionState.transactionEvents match {
       case xs :+ x => xs :+ x.copy(endOfTransaction = true, offset = offset)
       case xs      => xs
@@ -270,21 +287,22 @@ object TransactionState {
         offset = offset,
         timestamp = timestamp,
         fileName = transactionState.fileName,
-        transactionEvents = Queue.empty
+        transactionEvents = Queue.empty,
+        binLogConfig = transactionState.binLogConfig
       ),
       Some(pack)
     )
   }
 
   def convertToJson(
-      tableMeta: TableMetadata,
-      timestamp: Long,
-      action: String,
-      fileName: String,
-      offset: Long,
-      includedColumns: Array[Int],
-      record: (Option[Row], Option[Row])
-  ): EventMessage = {
+                     tableMeta: TableMetadata,
+                     timestamp: Long,
+                     action: String,
+                     fileName: String,
+                     offset: Long,
+                     includedColumns: Array[Int],
+                     record: (Option[Row], Option[Row])
+                   ): EventMessage = {
 
     val ba = record match {
       case (Some(before), Some(after)) =>
@@ -326,10 +344,10 @@ object TransactionState {
   }
 
   def extractPk(
-      metadata: TableMetadata,
-      columns: Array[Int],
-      row: Array[Option[Serializable]]
-  ): Array[(String, Json)] =
+                 metadata: TableMetadata,
+                 columns: Array[Int],
+                 row: Array[Option[Serializable]]
+               ): Array[(String, Json)] =
     columns
       .map(i => metadata.columns(i + 1))
       .zip(row)
@@ -337,13 +355,16 @@ object TransactionState {
       .map(mapRawToMeta)
 
   def toTableName(tableId: Long)(implicit transactionState: TransactionState): Option[String] =
-    transactionState.schemaMetadata.idToTable.get(tableId).map(_.name)
+    transactionState.schemaMetadata.idToTable.get(tableId) match {
+      case Some(tableName) => Some(transactionState.schemaMetadata.tables(tableName).name)
+      case None => None
+    }
 
   def recordToJson(
-      tableMetadata: TableMetadata,
-      includedColumns: Array[Int],
-      record: Array[Option[Serializable]]
-  ): Iterable[(String, Json)] =
+                    tableMetadata: TableMetadata,
+                    includedColumns: Array[Int],
+                    record: Array[Option[Serializable]]
+                  ): Iterable[(String, Json)] =
     includedColumns
       .map(i => tableMetadata.columns(i + 1))
       .zip(record)
@@ -352,11 +373,11 @@ object TransactionState {
   def mapRawToMeta: ((ColumnMetadata, Option[Serializable])) => (String, Json) = {
     case (metadata, Some(value)) =>
       val jsonValue = metadata.dataType match {
-        case "bigint" => Json.fromLong(value.asInstanceOf[Long])
-        case "int" | "tinyint" => Json.fromInt(value.asInstanceOf[Int])
-        case "date" | "datetime" | "time" => Json.fromLong(value.asInstanceOf[Long])
-        case "decimal" => Json.fromBigDecimal(value.asInstanceOf[BigDecimal])
-        case "float" => Json.fromFloat(value.asInstanceOf[Float]).get
+        case "bigint"                      => Json.fromLong(value.asInstanceOf[Long])
+        case "int" | "tinyint"             => Json.fromInt(value.asInstanceOf[Int])
+        case "date" | "datetime" | "time"  => Json.fromLong(value.asInstanceOf[Long])
+        case "decimal"                     => Json.fromBigDecimal(value.asInstanceOf[BigDecimal])
+        case "float"                       => Json.fromFloat(value.asInstanceOf[Float]).get
         case "text" | "mediumtext" | "longtext" | "tinytext" | "varchar" =>
           Json.fromString(new String(value.asInstanceOf[Array[Byte]]))
         case _ => Json.fromString(value.toString)
@@ -368,9 +389,10 @@ object TransactionState {
   def nullsToOptions(row: Array[Serializable]): Row = row.map(Option(_))
 
   def createTransactionState[F[_]: Sync: Logger](
-      schemaMetadata: SchemaMetadata,
-      binlogClient: BinaryLogClient
-  ): F[Ref[F, TransactionState]] =
+                                                  schemaMetadata: SchemaMetadata,
+                                                  binlogClient: BinaryLogClient,
+                                                  binLogConfig: BinLogConfig
+                                                ): F[Ref[F, TransactionState]] =
     Ref[F]
       .of(
         TransactionState(
@@ -378,7 +400,8 @@ object TransactionState {
           schemaMetadata = schemaMetadata,
           fileName = binlogClient.getBinlogFilename,
           offset = 0,
-          timestamp = 0
+          timestamp = 0,
+          binLogConfig = binLogConfig
         )
       )
       .flatMap(v => Logger[F].info("created transaction state") >> Sync[F].pure(v))

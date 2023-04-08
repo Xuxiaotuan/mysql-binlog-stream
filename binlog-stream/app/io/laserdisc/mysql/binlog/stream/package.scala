@@ -10,7 +10,7 @@ import io.laserdisc.mysql.binlog.event.EventMessage
 package object stream {
   def streamEvents[F[_]: Concurrent: Sync: Logger](
       transactionState: Ref[F, TransactionState],
-      schema: String
+      schema: String = null
   ): fs2.Pipe[F, Event, EventMessage] =
     _.through(streamTransactionPackages[F](transactionState, schema)).flatMap(pkg =>
       fs2.Stream.eval(warnBigTransactionPackage(pkg)) >> fs2.Stream(pkg.events: _*)
@@ -41,7 +41,7 @@ package object stream {
           k -> v.size
         })
         _ <- Logger[F].warn(s"""Transaction has > then 1000 elements in it with
-                                 |following distribution $distro
+                               |following distribution $distro
         """.stripMargin)
       } yield ()
     else

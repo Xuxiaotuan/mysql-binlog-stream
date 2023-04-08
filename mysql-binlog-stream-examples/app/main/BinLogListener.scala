@@ -46,7 +46,7 @@ object BinLogListener extends IOApp {
           binlogClient   <- client.createBinLogClient[IO](config)
           schemaMetadata <- SchemaMetadata.buildSchemaMetadata(config.schema)
           transactionState <- TransactionState
-            .createTransactionState[IO](schemaMetadata, binlogClient)
+            .createTransactionState[IO](schemaMetadata, binlogClient, config)
           _ <- MysqlBinlogStream
             .rawEvents[IO](binlogClient)
             .through(streamEvents[IO](transactionState, config.schema))
