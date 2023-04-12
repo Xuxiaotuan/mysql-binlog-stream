@@ -378,7 +378,7 @@ object TransactionState {
         case "date" | "datetime" | "time"  => Json.fromLong(value.asInstanceOf[Long])
         case "decimal"                     => Json.fromBigDecimal(value.asInstanceOf[BigDecimal])
         case "float"                       => Json.fromFloat(value.asInstanceOf[Float]).get
-        case "text" | "mediumtext" | "longtext" | "tinytext" | "varchar" =>
+        case "text" | "mediumtext" | "longtext" | "tinytext" | "varchar" | "char" =>
           Json.fromString(new String(value.asInstanceOf[Array[Byte]]))
         case _ => Json.fromString(value.toString)
       }
