@@ -1,12 +1,14 @@
 package io.laserdisc.mysql.binlog.stream
 
+import cats.effect._
 import cats.effect.std.{Dispatcher, Queue}
-import cats.effect.{Async, IO, LiftIO}
 import cats.implicits._
 import com.github.shyiko.mysql.binlog.BinaryLogClient
 import com.github.shyiko.mysql.binlog.event.Event
 import fs2.Stream
 import org.typelevel.log4cats.Logger
+
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 class MysSqlBinlogEventProcessor[F[_]: Async: Logger](
     binlogClient: BinaryLogClient,
@@ -30,12 +32,16 @@ class MysSqlBinlogEventProcessor[F[_]: Async: Logger](
         )
 
       override def onEventDeserializationFailure(client: BinaryLogClient, ex: Exception): Unit =
-        dispatcher.unsafeRunAndForget(
-          Logger[F].error(ex)("failed to deserialize event") >> queue.offer(None)
-        )
+      //        dispatcher.unsafeRunAndForget(
+      //          Logger[F].error(ex)("failed to deserialize event") >> queue.offer(None)
+      //        )
+      // todo filter this out for now, don't want to stop service
+        dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"failed to deserialize event"))
 
-      override def onDisconnect(client: BinaryLogClient): Unit =
+      override def onDisconnect(client: BinaryLogClient): Unit = {
         dispatcher.unsafeRunAndForget(Logger[F].error("Disconnected") >> queue.offer(None))
+        throw new Exception("binlogClient disconnected")
+      }
     })
 
     binlogClient.connect()
@@ -45,8 +51,9 @@ class MysSqlBinlogEventProcessor[F[_]: Async: Logger](
 object MysqlBinlogStream {
 
   def rawEvents[F[_]: Async: Logger: LiftIO](
-      client: BinaryLogClient
-  ): Stream[F, Event] =
+      client: BinaryLogClient,
+      checkInterval: FiniteDuration = 10.seconds
+  ): Stream[F, Event] = {
     for {
       d <- Stream.resource(Dispatcher[F])
       q <- Stream.eval(Queue.bounded[F, Option[Event]](10000))
@@ -61,10 +68,24 @@ object MysqlBinlogStream {
             IO.delay[Unit](proc.run()).start.flatMap(_.joinWithNever)
           )
         )
+      monitorStream = Stream
+        .fixedRate[F](checkInterval)
+        .evalMap { _ =>
+          Async[F].delay(client.isConnected).flatMap { connected =>
+            if (connected) {
+              Logger[F].info(s"Binlog Stream Monitor is running")
+            } else {
+              Logger[F].error("Binlog Stream Monitor is stopping") >>
+                Async[F].delay(client.disconnect())
+            }
+          }
+        }
       evtStream <- Stream
         .fromQueueNoneTerminated(q)
         .concurrently(procStream)
+        .concurrently(monitorStream)
         .onFinalize(Async[F].delay(client.disconnect()))
     } yield evtStream
+  }
 
 }
