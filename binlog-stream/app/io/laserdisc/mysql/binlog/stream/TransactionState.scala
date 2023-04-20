@@ -6,6 +6,7 @@ import cats.effect.{IO, Ref, Sync}
 import cats.implicits._
 import com.github.shyiko.mysql.binlog.BinaryLogClient
 import com.github.shyiko.mysql.binlog.event.EventType.{EXT_UPDATE_ROWS, UPDATE_ROWS}
+import com.github.shyiko.mysql.binlog.event.deserialization.json.JsonBinary
 import com.github.shyiko.mysql.binlog.event.{Event, EventData, EventType, EventHeaderV4 => JEventHeaderV4}
 import org.typelevel.log4cats.Logger
 import io.circe.Json
@@ -380,6 +381,8 @@ object TransactionState {
         case "float"                       => Json.fromFloat(value.asInstanceOf[Float]).get
         case "text" | "mediumtext" | "longtext" | "tinytext" | "varchar" | "char" =>
           Json.fromString(new String(value.asInstanceOf[Array[Byte]]))
+        case "json" =>
+          Json.fromString(JsonBinary.parseAsString(value.asInstanceOf[Array[Byte]]))
         case _ => Json.fromString(value.toString)
       }
       metadata.name -> jsonValue
