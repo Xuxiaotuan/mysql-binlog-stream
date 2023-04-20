@@ -344,41 +344,52 @@ object TransactionState {
     )
   }
 
-  def extractPk(
-                 metadata: TableMetadata,
-                 columns: Array[Int],
-                 row: Array[Option[Serializable]]
-               ): Array[(String, Json)] =
-    columns
-      .map(i => metadata.columns(i + 1))
-      .zip(row)
-      .filter { case (meta, _) => meta.isPk }
-      .map(mapRawToMeta)
-
   def toTableName(tableId: Long)(implicit transactionState: TransactionState): Option[String] =
     transactionState.schemaMetadata.idToTable.get(tableId) match {
       case Some(tableName) => Some(transactionState.schemaMetadata.tables(tableName).name)
-      case None => None
+      case None            => None
     }
 
-  def recordToJson(
-                    tableMetadata: TableMetadata,
-                    includedColumns: Array[Int],
-                    record: Array[Option[Serializable]]
-                  ): Iterable[(String, Json)] =
-    includedColumns
-      .map(i => tableMetadata.columns(i + 1))
+  def zipMetadataAndRecord(
+                            metadata: TableMetadata,
+                            columns: Array[Int],
+                            record: Array[Option[Serializable]]
+                          ): Array[(Option[ColumnMetadata], Option[Serializable])] =
+    columns
+      .map { i => if (metadata.columns.contains(i + 1)) Some(metadata.columns(i + 1)) else None }
       .zip(record)
+
+  def extractPk(
+                 metadata: TableMetadata,
+                 columns: Array[Int],
+                 record: Array[Option[Serializable]]
+               ): Array[(String, Json)] =
+    zipMetadataAndRecord(metadata, columns, record)
+      .filter {
+        case (Some(meta), _) => meta.isPk
+        case _               => false
+      }
       .map(mapRawToMeta)
 
-  def mapRawToMeta: ((ColumnMetadata, Option[Serializable])) => (String, Json) = {
-    case (metadata, Some(value)) =>
+  def recordToJson(
+      metadata: TableMetadata,
+      columns: Array[Int],
+      record: Array[Option[Serializable]]
+  ): Iterable[(String, Json)] =
+    zipMetadataAndRecord(metadata, columns, record)
+      .map(mapRawToMeta)
+
+  def mapRawToMeta: ((Option[ColumnMetadata], Option[Serializable])) => (String, Json) = {
+    case (Some(metadata), Some(value)) =>
       val jsonValue = metadata.dataType match {
-        case "bigint"                      => Json.fromLong(value.asInstanceOf[Long])
-        case "int" | "tinyint"             => Json.fromInt(value.asInstanceOf[Int])
-        case "date" | "datetime" | "time"  => Json.fromLong(value.asInstanceOf[Long])
-        case "decimal"                     => Json.fromBigDecimal(value.asInstanceOf[BigDecimal])
-        case "float"                       => Json.fromFloat(value.asInstanceOf[Float]).get
+        case "bigint"                     => Json.fromLong(value.asInstanceOf[Long])
+        case "int" | "tinyint"            => Json.fromInt(value.asInstanceOf[Int])
+        case "date" | "datetime" | "time" => Json.fromLong(value.asInstanceOf[Long])
+        case "decimal"                    => Json.fromBigDecimal(value.asInstanceOf[BigDecimal])
+        case "float"                      => Json.fromFloat(value.asInstanceOf[Float]) match {
+          case Some(floatValue) => floatValue
+          case _ =>  Json.Null
+        }
         case "text" | "mediumtext" | "longtext" | "tinytext" | "varchar" | "char" =>
           Json.fromString(new String(value.asInstanceOf[Array[Byte]]))
         case "json" =>
@@ -386,7 +397,8 @@ object TransactionState {
         case _ => Json.fromString(value.toString)
       }
       metadata.name -> jsonValue
-    case (metadata, _) => metadata.name -> Json.Null
+    case (Some(metadata), _) => metadata.name -> Json.Null
+    case (_, _)              => ""            -> Json.Null
   }
 
   def nullsToOptions(row: Array[Serializable]): Row = row.map(Option(_))
