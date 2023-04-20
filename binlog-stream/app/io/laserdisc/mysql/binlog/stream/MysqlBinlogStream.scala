@@ -52,7 +52,8 @@ object MysqlBinlogStream {
 
   def rawEvents[F[_]: Async: Logger: LiftIO](
       client: BinaryLogClient,
-      checkInterval: FiniteDuration = 10.seconds
+      checkInterval: FiniteDuration = 10.seconds,
+      monitorName: String = "default"
   ): Stream[F, Event] = {
     for {
       d <- Stream.resource(Dispatcher[F])
@@ -73,13 +74,14 @@ object MysqlBinlogStream {
         .evalMap { _ =>
           Async[F].delay(client.isConnected).flatMap { connected =>
             if (connected) {
-              Logger[F].info(s"Binlog Stream Monitor is running")
+              Logger[F].info(s"Binlog Stream ${monitorName} Monitor is running")
             } else {
-              Logger[F].error("Binlog Stream Monitor is stopping") >>
+              Logger[F].error(s"Binlog Stream ${monitorName} Monitor is stopping") >>
                 Async[F].delay(client.disconnect())
             }
           }
         }
+
       evtStream <- Stream
         .fromQueueNoneTerminated(q)
         .concurrently(procStream)
