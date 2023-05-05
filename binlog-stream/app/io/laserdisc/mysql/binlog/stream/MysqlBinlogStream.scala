@@ -13,7 +13,8 @@ import scala.concurrent.duration.{DurationInt, FiniteDuration}
 class MysSqlBinlogEventProcessor[F[_]: Async: Logger](
     binlogClient: BinaryLogClient,
     queue: Queue[F, Option[Event]],
-    dispatcher: Dispatcher[F]
+    dispatcher: Dispatcher[F],
+    monitorName: String = "default"
 ) {
 
   def run(): Unit = {
@@ -24,22 +25,25 @@ class MysSqlBinlogEventProcessor[F[_]: Async: Logger](
 
     binlogClient.registerLifecycleListener(new BinaryLogClient.LifecycleListener {
       override def onConnect(client: BinaryLogClient): Unit =
-        dispatcher.unsafeRunAndForget(Logger[F].info("Connected"))
+        dispatcher.unsafeRunAndForget(Logger[F].info(s"${monitorName} Connected"))
 
-      override def onCommunicationFailure(client: BinaryLogClient, ex: Exception): Unit =
-        dispatcher.unsafeRunAndForget(
-          Logger[F].error(ex)("communication failed with") >> queue.offer(None)
-        )
+      override def onCommunicationFailure(client: BinaryLogClient, ex: Exception): Unit = {
+//        dispatcher.unsafeRunAndForget(
+//          Logger[F].error(ex)(s"${monitorName} communication failed with") >> queue.offer(None)
+//        )
+        // todo filter this out for now, don't want to stop service
+        dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"${monitorName} communication failed with"))
+      }
 
       override def onEventDeserializationFailure(client: BinaryLogClient, ex: Exception): Unit =
       //        dispatcher.unsafeRunAndForget(
       //          Logger[F].error(ex)("failed to deserialize event") >> queue.offer(None)
       //        )
       // todo filter this out for now, don't want to stop service
-        dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"failed to deserialize event"))
+        dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"${monitorName} failed to deserialize event"))
 
       override def onDisconnect(client: BinaryLogClient): Unit = {
-        dispatcher.unsafeRunAndForget(Logger[F].error("Disconnected") >> queue.offer(None))
+        dispatcher.unsafeRunAndForget(Logger[F].error(s"${monitorName} Disconnected") >> queue.offer(None))
         throw new Exception("binlogClient disconnected")
       }
     })
@@ -58,7 +62,7 @@ object MysqlBinlogStream {
     for {
       d <- Stream.resource(Dispatcher[F])
       q <- Stream.eval(Queue.bounded[F, Option[Event]](10000))
-      proc = new MysSqlBinlogEventProcessor[F](client, q, d)
+      proc = new MysSqlBinlogEventProcessor[F](client, q, d, monitorName)
       /* some difficulties here during the cats3 migration.  Basically, we would have used:
        * .eval(Async[F].interruptible(many = true)(proc.run()))
        * instead of the below code to start `proc`.  Unfortunately, the binlogger library uses SocketStream.read

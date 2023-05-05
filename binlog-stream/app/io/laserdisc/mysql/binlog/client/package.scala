@@ -17,7 +17,7 @@ package object client {
       client <- Sync[F].delay(config.mkBinaryLogClient(offset))
       _ <-
         Logger[F].info(
-          s"Binlog client created with offset ${client.getBinlogFilename} ${client.getBinlogPosition}"
+          s"Binlog client ${config.schema} created with offset ${client.getBinlogFilename} ${client.getBinlogPosition}"
         )
     } yield client
 }

@@ -419,6 +419,6 @@ object TransactionState {
           binLogConfig = binLogConfig
         )
       )
-      .flatMap(v => Logger[F].info("created transaction state") >> Sync[F].pure(v))
+      .flatMap(v => Logger[F].info(s"${binLogConfig.schema} created transaction state") >> Sync[F].pure(v))
 
 }
