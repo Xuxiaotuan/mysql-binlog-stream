@@ -11,13 +11,14 @@ package object client {
 
   def createBinLogClient[F[_]: Sync: Logger](
       config: BinLogConfig,
-      offset: Option[BinlogOffset] = None
+      offset: Option[BinlogOffset] = None,
+      serverId: Long = 65535
   ): F[BinaryLogClient] =
     for {
-      client <- Sync[F].delay(config.mkBinaryLogClient(offset))
+      client <- Sync[F].delay(config.mkBinaryLogClient(offset, serverId))
       _ <-
         Logger[F].info(
-          s"Binlog client ${config.schema} created with offset ${client.getBinlogFilename} ${client.getBinlogPosition}"
+          s"Binlog client ${config.schema} created with offset ${client.getBinlogFilename} ${client.getBinlogPosition}, serverId: $serverId"
         )
     } yield client
 }

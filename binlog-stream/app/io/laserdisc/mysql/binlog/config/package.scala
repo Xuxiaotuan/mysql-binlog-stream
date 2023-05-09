@@ -10,7 +10,7 @@ package object config {
 
   implicit class BinLogConfigOps(val v: BinLogConfig) extends AnyVal {
 
-    def mkBinaryLogClient(offset: Option[BinlogOffset] = None): BinaryLogClient = {
+    def mkBinaryLogClient(offset: Option[BinlogOffset] = None, serverId: Long = 65535): BinaryLogClient = {
 
       val blc = new BinaryLogClient(v.host, v.port, v.user, v.password)
 
@@ -24,6 +24,7 @@ package object config {
       }
 
       blc.setSSLMode(if (v.useSSL) SSLMode.VERIFY_IDENTITY else SSLMode.DISABLED)
+      blc.setServerId(serverId)
 
       offset match {
         case Some(o) =>

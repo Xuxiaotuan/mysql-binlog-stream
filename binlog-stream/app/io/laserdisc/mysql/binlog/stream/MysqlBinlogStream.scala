@@ -43,7 +43,7 @@ class MysSqlBinlogEventProcessor[F[_]: Async: Logger](
         dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"${monitorName} failed to deserialize event"))
 
       override def onDisconnect(client: BinaryLogClient): Unit = {
-        dispatcher.unsafeRunAndForget(Logger[F].error(s"${monitorName} Disconnected") >> queue.offer(None))
+        dispatcher.unsafeRunAndForget(Logger[F].error(s"${monitorName} Disconnected  queue size: ${queue.size}") >> queue.offer(None))
         throw new Exception("binlogClient disconnected")
       }
     })
