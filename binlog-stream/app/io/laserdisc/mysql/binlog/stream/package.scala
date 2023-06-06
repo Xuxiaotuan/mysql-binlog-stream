@@ -1,5 +1,6 @@
 package io.laserdisc.mysql.binlog
 
+import cats.data.State
 import cats.effect.kernel.Ref
 import cats.effect.{Concurrent, Sync}
 import cats.implicits._
@@ -28,7 +29,16 @@ package object stream {
   ): fs2.Pipe[F, Event, TransactionPackage] =
     _.evalMap(event =>
       Logger[F].debug(s"received binlog event $event") >> transactionState.modifyState(
-        TransactionState.nextState(event, schema)
+        try {
+          TransactionState.nextState(event, schema)
+        }catch {
+          case e: Throwable =>
+            Logger[F].debug(s"@debug received binlog event error $event")
+            e.printStackTrace()
+            State[TransactionState, Option[TransactionPackage]] { implicit transactionState: TransactionState =>
+              (transactionState, None)
+            }
+        }
       )
     ).unNone
 

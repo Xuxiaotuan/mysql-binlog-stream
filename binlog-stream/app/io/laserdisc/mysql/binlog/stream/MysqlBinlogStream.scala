@@ -32,15 +32,16 @@ class MysSqlBinlogEventProcessor[F[_]: Async: Logger](
 //          Logger[F].error(ex)(s"${monitorName} communication failed with") >> queue.offer(None)
 //        )
         // todo filter this out for now, don't want to stop service
-        dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"${monitorName} communication failed with"))
+        dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"${monitorName} communication failed with" + ex.printStackTrace()))
       }
 
-      override def onEventDeserializationFailure(client: BinaryLogClient, ex: Exception): Unit =
+      override def onEventDeserializationFailure(client: BinaryLogClient, ex: Exception): Unit = {
       //        dispatcher.unsafeRunAndForget(
       //          Logger[F].error(ex)("failed to deserialize event") >> queue.offer(None)
       //        )
       // todo filter this out for now, don't want to stop service
-        dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"${monitorName} failed to deserialize event"))
+        dispatcher.unsafeRunAndForget(Logger[F].error(ex)(s"${monitorName} failed to deserialize event" + ex.printStackTrace()))
+      }
 
       override def onDisconnect(client: BinaryLogClient): Unit = {
         dispatcher.unsafeRunAndForget(Logger[F].error(s"${monitorName} Disconnected  queue size: ${queue.size}") >> queue.offer(None))
